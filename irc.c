@@ -10,17 +10,20 @@
 
 #include <curses.h>
 #include <unistd.h>
+#ifdef QDOS
+#include <sys/bsdtypes.h>
+#endif
 #include <arpa/inet.h>
 #include <sys/types.h>
 #include <sys/socket.h>
-#include <sys/select.h>
 #include <sys/ioctl.h>
+#include <sys/time.h>
+#include <sys/select.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <netdb.h>
 #include <locale.h>
 #include <wchar.h>
-#include <openssl/ssl.h>
 
 #undef CTRL
 #define CTRL(x)  (x & 037)
@@ -30,7 +33,7 @@
 #define DATEFMT  "%H:%M"
 #define PFMT     "  %-12s < %s"
 #define PFMTHIGH "> %-12s < %s"
-#define SRV      "irc.oftc.net"
+#define SRV      "irc.mibbit.net"
 #define PORT     "6667"
 
 enum {
@@ -62,22 +65,22 @@ static struct Chan {
 	char join; /* Channel was 'j'-oined. */
 } chl[MaxChans];
 
+/* QDOS Stuff */
+char _prog_name[] = "qdos-irc";
+long _stack = 16L * 1024L;
+
 static int ssl;
 static struct {
 	int fd;
-	SSL *ssl;
-	SSL_CTX *ctx;
 } srv;
 static char nick[64];
-static int quit, winchg;
+static int quit;
 static int nch, ch; /* Current number of channels, and current channel. */
 static char outb[BufSz], *outp = outb; /* Output buffer. */
 static FILE *logfp;
 
 static unsigned char utfbyte[UtfSz + 1] = {0x80,    0, 0xC0, 0xE0, 0xF0};
 static unsigned char utfmask[UtfSz + 1] = {0xC0, 0x80, 0xE0, 0xF0, 0xF8};
-static Rune utfmin[UtfSz + 1] = {       0,    0,  0x80,  0x800,  0x10000};
-static Rune utfmax[UtfSz + 1] = {0x10FFFF, 0x7F, 0x7FF, 0xFFFF, 0x10FFFF};
 
 static void scmd(char *, char *, char *, char *);
 static void tdrawbar(void);
@@ -92,71 +95,6 @@ panic(const char *m)
 	exit(1);
 }
 
-static size_t
-utf8validate(Rune *u, size_t i)
-{
-	if (*u < utfmin[i] || *u > utfmax[i] || (0xD800 <= *u && *u <= 0xDFFF))
-		*u = RuneInvalid;
-	for (i = 1; *u > utfmax[i]; ++i)
-		;
-	return i;
-}
-
-static Rune
-utf8decodebyte(unsigned char c, size_t *i)
-{
-	for (*i = 0; *i < UtfSz + 1; ++(*i))
-		if ((c & utfmask[*i]) == utfbyte[*i])
-			return c & ~utfmask[*i];
-	return 0;
-}
-
-static size_t
-utf8decode(char *c, Rune *u, size_t clen)
-{
-	size_t i, j, len, type;
-	Rune udecoded;
-
-	*u = RuneInvalid;
-	if (!clen)
-		return 0;
-	udecoded = utf8decodebyte(c[0], &len);
-	if (len < 1 || len > UtfSz)
-		return 1;
-	for (i = 1, j = 1; i < clen && j < len; ++i, ++j) {
-		udecoded = (udecoded << 6) | utf8decodebyte(c[i], &type);
-		if (type != 0)
-			return j;
-	}
-	if (j < len)
-		return 0;
-	*u = udecoded;
-	utf8validate(u, len);
-	return len;
-}
-
-static char
-utf8encodebyte(Rune u, size_t i)
-{
-	return utfbyte[i] | (u & ~utfmask[i]);
-}
-
-static size_t
-utf8encode(Rune u, char *c)
-{
-	size_t len, i;
-
-	len = utf8validate(&u, 0);
-	if (len > UtfSz)
-		return 0;
-	for (i = len - 1; i != 0; --i) {
-		c[i] = utf8encodebyte(u, 0);
-		u >>= 6;
-	}
-	c[0] = utf8encodebyte(u, len);
-	return len;
-}
-
 static void
 sndf(const char *fmt, ...)
 {
@@ -166,7 +104,7 @@ sndf(const char *fmt, ...)
 	if (l < 2)
 		return;
 	va_start(vl, fmt);
-	n = vsnprintf(outp, l - 2, fmt, vl);
+	n = vsprintf(outp, fmt, vl);
 	va_end(vl);
 	outp += n > l - 2 ? l - 2 : n;
 	*outp++ = '\r';
@@ -182,10 +120,7 @@ srd(void)
 
 	if (p - l >= BufSz)
 		p = l; /* Input buffer overflow, there should something better to do. */
-	if (ssl)
-		rd = SSL_read(srv.ssl, p, BufSz - (p - l));
-	else
-		rd = read(srv.fd, p, BufSz - (p - l));
+	rd = read(srv.fd, p, BufSz - (p - l));
 	if (rd <= 0)
 		return 0;
 	p += rd;
@@ -229,61 +164,38 @@ sinit(const char *key, const char *nick, const char *user)
 static char *
 dial(const char *host, const char *service)
 {
-	struct addrinfo hints, *res = NULL, *rp;
+    struct hostent *server;
+    struct sockaddr_in conn;
 	int fd = -1, e;
+    int port;
 
-	memset(&hints, 0, sizeof(hints));
-	hints.ai_family = AF_UNSPEC;     /* allow IPv4 or IPv6 */
-	hints.ai_flags = AI_NUMERICSERV; /* avoid name lookup for port */
-	hints.ai_socktype = SOCK_STREAM;
-	if ((e = getaddrinfo(host, service, &hints, &res)))
-		return "Getaddrinfo failed.";
-	for (rp = res; rp; rp = rp->ai_next) {
-		if ((fd = socket(res->ai_family, res->ai_socktype, res->ai_protocol)) == -1)
-			continue;
-		if (connect(fd, res->ai_addr, res->ai_addrlen) == -1) {
-			close(fd);
-			continue;
-		}
-		break;
+    server = gethostbyname(host);
+    port = atoi(service);
+
+    conn.sin_family = AF_INET;
+    conn.sin_port = htons(port);
+    conn.sin_addr.s_addr = *(long *)(server->h_addr_list[0]);
+
+	if ((fd = socket(AF_INET, SOCK_STREAM, 0)) == -1)
+        return "Cannon open socket.";
+	if (connect(fd, (struct sockaddr *)&conn, sizeof(conn)) == -1) {
+		close(fd);
+        return "Cannot connect to host.";
 	}
-	if (fd == -1)
-		return "Cannot connect to host.";
 	srv.fd = fd;
-	if (ssl) {
-		SSL_load_error_strings();
-		SSL_library_init();
-		srv.ctx = SSL_CTX_new(SSLv23_client_method());
-		if (!srv.ctx)
-			return "Could not initialize ssl context.";
-		srv.ssl = SSL_new(srv.ctx);
-		if (SSL_set_fd(srv.ssl, srv.fd) == 0
-		|| SSL_connect(srv.ssl) != 1)
-			return "Could not connect with ssl.";
-	}
-	freeaddrinfo(res);
 	return 0;
 }
 
 static void
 hangup(void)
 {
-	if (srv.ssl) {
-		SSL_shutdown(srv.ssl);
-		SSL_free(srv.ssl);
-		srv.ssl = 0;
-	}
 	if (srv.fd) {
 		close(srv.fd);
 		srv.fd = 0;
 	}
-	if (srv.ctx) {
-		SSL_CTX_free(srv.ctx);
-		srv.ctx = 0;
-	}
 }
 
-static inline int
+static int
 chfind(const char *name)
 {
 	int i;
@@ -340,7 +252,6 @@ pushl(char *p, char *e)
 	int x, cl;
 	char *w;
 	Rune u[2];
-	cchar_t cc;
 
 	u[1] = 0;
 	if ((w = memchr(p, '\n', e - p)))
@@ -358,18 +269,13 @@ pushl(char *p, char *e)
 		}
 		if (p >= e || *p == ' ' || p - w + INDENT >= scr.x - 1) {
 			while (w < p) {
-				w += utf8decode(w, u, UtfSz);
-				if (wcwidth(*u) > 0 || *u == '\n') {
-					setcchar(&cc, u, 0, 0, 0);
-					wadd_wch(scr.mw, &cc);
-				}
+				waddch(scr.mw, *w++);
 			}
 			if (p >= e)
 				return e;
 		}
-		p += utf8decode(p, u, UtfSz);
-		if ((cl = wcwidth(*u)) >= 0)
-			x += cl;
+		p++;
+		x++;
 	}
 }
 
@@ -399,7 +305,7 @@ pushf(int cn, const char *fmt, ...)
 	c->eol[n++] = ' ';
 	va_start(vl, fmt);
 	s = c->eol + n;
-	n += vsnprintf(s, LineLen - n - 1, fmt, vl);
+	n += vsprintf(s, fmt, vl);
 	va_end(vl);
 
 	if (logfp) {
@@ -451,7 +357,7 @@ scmd(char *usr, char *cmd, char *par, char *data)
 			tredraw();
 		}
 		c = chfind(chan);
-		if (strcasestr(data, nick)) {
+		if (strstr(data, nick)) {
 			pushf(c, PFMTHIGH, usr, data);
 			chl[c].high |= ch != c;
 		} else
@@ -557,20 +463,13 @@ uparse(char *m)
 }
 
 static void
-sigwinch(int sig)
-{
-	if (sig)
-		winchg = 1;
-}
-
-static void
 tinit(void)
 {
 	setlocale(LC_ALL, "");
-	signal(SIGWINCH, sigwinch);
 	initscr();
 	raw();
 	noecho();
+    timeout(0);
 	getmaxyx(stdscr, scr.y, scr.x);
 	if (scr.y < 4)
 		panic("Screen too small.");
@@ -582,29 +481,9 @@ tinit(void)
 	scrollok(scr.mw, 1);
 	if (has_colors() == TRUE) {
 		start_color();
-		use_default_colors();
 		init_pair(1, COLOR_WHITE, COLOR_BLUE);
 		wbkgd(scr.sw, COLOR_PAIR(1));
 	}
-}
-
-static void
-tresize(void)
-{
-	struct winsize ws;
-
-	winchg = 0;
-	if (ioctl(0, TIOCGWINSZ, &ws) < 0)
-		panic("Ioctl (TIOCGWINSZ) failed.");
-	if (ws.ws_row <= 2)
-		return;
-	resizeterm(scr.y = ws.ws_row, scr.x = ws.ws_col);
-	wresize(scr.mw, scr.y - 2, scr.x);
-	wresize(scr.iw, 1, scr.x);
-	wresize(scr.sw, 1, scr.x);
-	mvwin(scr.iw, scr.y - 1, 0);
-	tredraw();
-	tdrawbar();
 }
 
 static void
@@ -613,6 +492,8 @@ tredraw(void)
 	struct Chan *const c = &chl[ch];
 	char *q, *p;
 	int nl = -1;
+
+	return;
 
 	if (c->eol == c->buf) {
 		wclear(scr.mw);
@@ -685,6 +566,8 @@ tgetch(void)
 
 	c = wgetch(scr.iw);
 	switch (c) {
+    case ERR:
+        return;
 	case CTRL('n'):
 		ch = (ch + 1) % nch;
 		chl[ch].high = chl[ch].new = 0;
@@ -860,13 +743,14 @@ main(int argc, char *argv[])
 	sinit(key, nick, user);
 	reconn = 0;
 	while (!quit) {
-		struct timeval t = {.tv_sec = 5};
+		struct timeval tm;
 		struct Chan *c;
 		fd_set rfs, wfs;
 		int ret;
 
-		if (winchg)
-			tresize();
+        memset(&tm, 0, sizeof(tm));
+        tm.tv_sec = 5;
+
 		FD_ZERO(&wfs);
 		FD_ZERO(&rfs);
 		FD_SET(0, &rfs);
@@ -875,10 +759,9 @@ main(int argc, char *argv[])
 			if (outp != outb)
 				FD_SET(srv.fd, &wfs);
 		}
-		ret = select(srv.fd + 1, &rfs, &wfs, 0, &t);
+		ret = select(srv.fd + 1, &rfs, &wfs, NULL, (struct timeval *)&tm);
 		if (ret < 0) {
-			if (errno == EINTR)
-				continue;
+			if (!((errno == EINTR) || (errno == EAGAIN)))
 			panic("Select failed.");
 		}
 		if (reconn) {
@@ -897,16 +780,13 @@ main(int argc, char *argv[])
 		if (FD_ISSET(srv.fd, &rfs)) {
 			if (!srd()) {
 				reconn = 1;
-				continue;
+				//continue;
 			}
 		}
 		if (FD_ISSET(srv.fd, &wfs)) {
 			int wr;
 
-			if (ssl)
-				wr = SSL_write(srv.ssl, outb, outp - outb);
-			else
-				wr = write(srv.fd, outb, outp - outb);
+			wr = write(srv.fd, outb, outp - outb);
 			if (wr <= 0) {
 				reconn = wr < 0;
 				continue;
