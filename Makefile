@@ -1,11 +1,15 @@
-BIN = irc
+BIN = qirc
+CC = qcc
 
-CFLAGS = -std=c99 -Os -D_POSIX_C_SOURCE=201112 -D_GNU_SOURCE -D_XOPEN_CURSES -D_XOPEN_SOURCE_EXTENDED=1 -D_DEFAULT_SOURCE -D_BSD_SOURCE
-LDFLAGS = -lncurses
+CFLAGS = 
+LDFLAGS = -lcurses -lsocket
 
 PREFIX=/usr/local
 
 all: ${BIN}
+
+qirc : irc.c
+	${CC} -o qirc irc.c ${LDFLAGS}
 
 install: ${BIN}
 	mkdir -p ${PREFIX}/bin
@@ -19,3 +23,15 @@ clean:
 	rm -f ${BIN} *.o
 
 .PHONY: all clean
+
+deploy: ${BIN}
+	curl -o qirc.zip http://www.dilwyn.me.uk/pe/ptrgen206.zip
+	qlzip -Q2 qirc.zip qirc
+	curl -O http://www.dilwyn.me.uk/tk/sigext30mod.zip
+	unzip sigext30mod.zip sigext30.rext
+	curl -O http://www.dilwyn.me.uk/tk/env.zip
+	unzip env.zip env.bin
+	curl -O http://www.dilwyn.me.uk/c/cursesex.zip
+	unzip cursesex.zip terminfo.QDOS
+	qlzip qirc.zip BOOT sigext30.rext env.bin terminfo.QDOS
+	-rm sigext30.rext sigext30mod.zip env.bin env.zip cursesex.zip terminfo.QDOS
