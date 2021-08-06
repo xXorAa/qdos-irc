@@ -12,6 +12,7 @@
 #include <unistd.h>
 #ifdef QDOS
 #include <sys/bsdtypes.h>
+#include <qdos.h>
 #endif
 #include <arpa/inet.h>
 #include <sys/types.h>
@@ -66,6 +67,17 @@ static struct Chan {
 } chl[MaxChans];
 
 /* QDOS Stuff */
+WINDOWDEF_t _condetails = {
+	2, /* border colour (red) */
+	0, /* border width */
+	0, /* paper (black) */
+	7, /* ink (white) */
+	512, /* width (pixel) */
+	256, /* height (pixels) */
+	0, /* x origin */
+	0 /* y origin */
+};
+
 char _prog_name[] = "qdos-irc";
 long _stack = 16L * 1024L;
 
