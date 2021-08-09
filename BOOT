@@ -1,0 +1,12 @@
+100 REMark use win1_ by default
+110 PROG_USE win1_ : DATA_USE win1_
+120 REMark load ptr_gen
+130 LRESPR ptr_gen
+140 REMark load sigext30_rext
+150 LRESPR sigext30_rext
+160 REMark load env_bin
+170 LRESPR env_bin
+180 SETENV "TERM=qdos"
+190 SETENV "TERMINFO=win1_terminfo"
+200 EX win1_qirc;'-n zzqdos -u zzqdos -s irc.mibbit.net'
+210 STOP
