@@ -10,5 +10,5 @@
 190 SETENV "TERMINFO=win1_terminfo"
 200 SETENV "USER=zzqdos"
 210 SETENV "IRCNICK=zzqdos"
-210 EX win1_qirc;'-n zzqdos -u zzqdos -s irc.mibbit.net'
+210 EX win1_qirc;'-n zzqdos -u zzqdos -s chat.qlforum.co.uk'
 220 STOP

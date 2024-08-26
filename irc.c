@@ -34,7 +34,7 @@
 #define DATEFMT  "%H:%M"
 #define PFMT     "  %-12s < %s"
 #define PFMTHIGH "> %-12s < %s"
-#define SRV      "irc.mibbit.net"
+#define SRV      "chat.qlforum.co.uk"
 #define PORT     "6667"
 
 enum {
